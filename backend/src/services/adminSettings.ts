@@ -1,4 +1,4 @@
-import { query } from './db';
+import { isSqlite, query } from './db';
 import type { AdminSettings } from '../types';
 import { sellMoreOfYourMasterPrompt } from '../data/masterPrompt';
 
@@ -41,14 +41,15 @@ function normalizeSettings(input: Partial<AdminSettings>): AdminSettings {
 
 export async function getAdminSettings(): Promise<AdminSettings> {
   const result = await query<{ value: Partial<AdminSettings> }>('SELECT value FROM admin_settings WHERE key = $1', ['generation']);
-  return normalizeSettings(result.rows[0]?.value || {});
+  const value = result.rows[0]?.value;
+  return normalizeSettings((typeof value === 'string' ? JSON.parse(value) : value) || {});
 }
 
 export async function updateAdminSettings(input: Partial<AdminSettings>): Promise<AdminSettings> {
   const next = normalizeSettings({ ...(await getAdminSettings()), ...input });
   await query(
     `INSERT INTO admin_settings (key, value) VALUES ('generation', $1)
-     ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = now()`,
+     ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = ${isSqlite ? "(strftime('%Y-%m-%dT%H:%M:%f','now') || '000Z')" : 'now()'}`,
     [JSON.stringify(next)],
   );
   return next;

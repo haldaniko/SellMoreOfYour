@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { query } from './db';
+import { isSqlite, query } from './db';
 import { findUserByEmail, findUserById } from './userStore';
 import type { AuthedRequestUser, User } from '../types';
 
@@ -35,11 +35,19 @@ export async function login(email: string, password: string) {
   const accessToken = signAccessToken(user);
   const refreshToken = crypto.randomBytes(48).toString('base64url');
   const csrfToken = crypto.randomBytes(24).toString('base64url');
-  await query(
-    `INSERT INTO refresh_tokens (user_id, token_hash, csrf_token, expires_at)
-     VALUES ($1, $2, $3, now() + ($4 || ' days')::interval)`,
-    [user.id, hashToken(refreshToken), csrfToken, refreshDays],
-  );
+  if (isSqlite) {
+    const expiresAt = new Date(Date.now() + refreshDays * 86400000).toISOString().replace('Z', '000Z');
+    await query(
+      'INSERT INTO refresh_tokens (user_id, token_hash, csrf_token, expires_at) VALUES ($1, $2, $3, $4)',
+      [user.id, hashToken(refreshToken), csrfToken, expiresAt],
+    );
+  } else {
+    await query(
+      `INSERT INTO refresh_tokens (user_id, token_hash, csrf_token, expires_at)
+       VALUES ($1, $2, $3, now() + ($4 || ' days')::interval)`,
+      [user.id, hashToken(refreshToken), csrfToken, refreshDays],
+    );
+  }
   return { user: { id: user.id, email: user.email, role: user.role }, accessToken, refreshToken, csrfToken };
 }
 
@@ -49,7 +57,7 @@ export async function refreshSession(refreshToken: string, csrfToken: string | u
     `SELECT rt.*, u.email, u.role
      FROM refresh_tokens rt
      JOIN users u ON u.id = rt.user_id
-     WHERE rt.token_hash = $1 AND rt.expires_at > now()`,
+     WHERE rt.token_hash = $1 AND rt.expires_at > ${isSqlite ? "(strftime('%Y-%m-%dT%H:%M:%f','now') || '000Z')" : 'now()'}`,
     [hashToken(refreshToken)],
   );
   const row = result.rows[0];

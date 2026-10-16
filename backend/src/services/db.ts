@@ -1,6 +1,9 @@
 import { Pool, type QueryResultRow } from 'pg';
+import Database from 'better-sqlite3';
+import { randomUUID } from 'crypto';
 import { samplePosts } from '../data/samplePosts';
 import { sanitizeArticleHtml } from './htmlSanitizer';
+import { verifySqlite } from './sqliteSchema';
 
 const fallbackDatabaseUrl = 'postgres://sellmoreofyour:sellmoreofyour@localhost:5432/sellmoreofyour';
 
@@ -25,15 +28,50 @@ function requireProductionEnv() {
 
 requireProductionEnv();
 
-export const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || fallbackDatabaseUrl,
-});
+const databaseUrl = process.env.DATABASE_URL || fallbackDatabaseUrl;
+export const isSqlite = databaseUrl.startsWith('sqlite:');
+const sqlitePath = isSqlite ? databaseUrl.slice('sqlite:'.length) : '';
+let sqlite: Database.Database | undefined;
+export const pool = isSqlite ? undefined : new Pool({ connectionString: databaseUrl });
+
+function sqliteDb() {
+  if (!sqlite) {
+    if (!sqlitePath) throw new Error('SQLite path is empty');
+    const candidate = new Database(sqlitePath, { fileMustExist: true });
+    try {
+      verifySqlite(candidate);
+      // Exercise a real journal write before reporting the backend healthy.
+      candidate.exec('BEGIN IMMEDIATE');
+      candidate.prepare('INSERT INTO subscribers (email) VALUES (?)').run(`probe-${randomUUID()}@invalid.example`);
+      candidate.exec('ROLLBACK');
+      sqlite = candidate;
+    } catch (error) {
+      if (candidate.inTransaction) candidate.exec('ROLLBACK');
+      candidate.close();
+      throw error;
+    }
+  }
+  return sqlite;
+}
 
 export async function query<T extends QueryResultRow = QueryResultRow>(text: string, params: unknown[] = []) {
-  return pool.query<T>(text, params);
+  if (!isSqlite) return pool!.query<T>(text, params);
+  const values: unknown[] = [];
+  const sql = text.replace(/\$(\d+)/g, (_match, index: string) => {
+    const value = params[Number(index) - 1];
+    values.push(Array.isArray(value) ? JSON.stringify(value) : value);
+    return '?';
+  });
+  const statement = sqliteDb().prepare(sql);
+  const rows = statement.reader ? statement.all(...values) : (statement.run(...values), []);
+  return { rows: rows as T[], rowCount: rows.length };
 }
 
 export async function ensureSchema() {
+  if (isSqlite) {
+    sqliteDb(); // Fail closed: production must never create an empty replacement DB.
+    return;
+  }
   await query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
   await query(`
     CREATE TABLE IF NOT EXISTS users (

@@ -1,5 +1,5 @@
 import slugify from 'slugify';
-import { query } from './db';
+import { isSqlite, query } from './db';
 import { sanitizeArticleHtml } from './htmlSanitizer';
 import type { Post, PostInput } from '../types';
 
@@ -12,7 +12,7 @@ function mapPost(row: any): Post {
     contentHtml: row.content_html,
     status: row.status,
     author: row.author,
-    tags: row.tags || [],
+    tags: typeof row.tags === 'string' ? JSON.parse(row.tags) : (row.tags || []),
     seoTitle: row.seo_title,
     seoDescription: row.seo_description,
     source: row.source,
@@ -44,7 +44,7 @@ export async function searchPosts(q: string): Promise<Post[]> {
   const term = `%${q.trim()}%`;
   const result = await query(
     `SELECT * FROM generated_posts
-     WHERE status = 'published' AND (title ILIKE $1 OR excerpt ILIKE $1 OR content_html ILIKE $1)
+     WHERE status = 'published' AND (title ${isSqlite ? 'LIKE' : 'ILIKE'} $1 OR excerpt ${isSqlite ? 'LIKE' : 'ILIKE'} $1 OR content_html ${isSqlite ? 'LIKE' : 'ILIKE'} $1)
      ORDER BY created_at DESC LIMIT 30`,
     [term],
   );
@@ -78,7 +78,7 @@ export async function upsertPost(input: PostInput, source: Post['source'] = 'adm
        seo_title = excluded.seo_title,
        seo_description = excluded.seo_description,
        source = excluded.source,
-       updated_at = now()
+       updated_at = ${isSqlite ? "(strftime('%Y-%m-%dT%H:%M:%f','now') || '000Z')" : 'now()'}
      RETURNING *`,
     values,
   );

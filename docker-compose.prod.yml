@@ -23,6 +23,19 @@ services:
       timeout: 5s
       retries: 20
 
+  migrate-db:
+    image: sellmoreofyour-backend-prod
+    build:
+      context: ./backend
+      target: prod
+    environment:
+      SOURCE_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      SQLITE_PATH: /data/db.sqlite3
+    volumes:
+      - ./:/data
+    command: ["node", "dist/migratePostgres.js"]
+    restart: "no"
+
   backend:
     image: sellmoreofyour-backend-prod
     build:
@@ -36,14 +49,17 @@ services:
         required: false
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: sqlite:/data/db.sqlite3
       REDIS_URL: redis://redis:6379
       GENERATION_TIMEZONE: ${GENERATION_TIMEZONE:-Europe/Sofia}
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate-db:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
+    volumes:
+      - ./:/data
+    command: ["sh", "scripts/run-as-data-owner.sh", "node", "dist/index.js"]
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:4000/api/health || exit 1"]
       interval: 10s
@@ -73,13 +89,13 @@ services:
       - path: backend/.env.production
         required: false
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: sqlite:/data/db.sqlite3
       LOCAL_SUPERADMIN_EMAIL: ${LOCAL_SUPERADMIN_EMAIL}
       SUPERADMIN_PASSWORD: ${LOCAL_SUPERADMIN_PASSWORD}
-    command: ["sh", "-c", "npm run create-superadmin -- \"$LOCAL_SUPERADMIN_EMAIL\""]
+    volumes:
+      - ./:/data
+    command: ["sh", "scripts/run-as-data-owner.sh", "node", "scripts/create-superadmin.mjs"]
     depends_on:
-      postgres:
-        condition: service_healthy
       backend:
         condition: service_healthy
     restart: "no"
